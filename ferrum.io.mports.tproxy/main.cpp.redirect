@@ -1,0 +1,88 @@
+#include <iostream>
+#include <cstring>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <linux/netfilter_ipv4.h>
+
+#define DEFAULT_PORT 9000
+#define BUFFER_SIZE 1024
+
+void crash(const char* msg) {
+  perror(msg);
+  exit(1);
+}
+
+void handle_client(int client_sock) {
+  char buffer[BUFFER_SIZE];
+  ssize_t nread;
+
+  // Get the original destination address
+  struct sockaddr_in orig_dst;
+  socklen_t orig_dst_len = sizeof(orig_dst);
+  if (getsockopt(client_sock, SOL_IP, SO_ORIGINAL_DST, &orig_dst, &orig_dst_len) == -1) {
+    perror("getsockopt SO_ORIGINAL_DST");
+    close(client_sock);
+    return;
+  }
+
+  char orig_dst_ip[INET_ADDRSTRLEN];
+  inet_ntop(AF_INET, &orig_dst.sin_addr, orig_dst_ip, INET_ADDRSTRLEN);
+  int orig_dst_port = ntohs(orig_dst.sin_port);
+
+  std::cout << "Original destination IP: " << orig_dst_ip << std::endl;
+  std::cout << "Original destination port: " << orig_dst_port << std::endl;
+
+  while ((nread = recv(client_sock, buffer, BUFFER_SIZE, 0)) > 0) {
+    std::cout << "Received data: " << std::string(buffer, nread) << std::endl;
+
+    // Echo the data back to the client
+    send(client_sock, buffer, nread, 0);
+  }
+
+  if (nread == -1) {
+    perror("recv");
+  }
+
+  close(client_sock);
+}
+
+int main() {
+  int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+  if (sockfd < 0) crash("couldn't allocate socket");
+
+  const int yes = 1;
+  if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0) crash("SO_REUSEADDR failed");
+
+  struct sockaddr_in bind_addr;
+  bind_addr.sin_family = AF_INET;
+  bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  bind_addr.sin_port = htons(DEFAULT_PORT);
+  if (bind(sockfd, (struct sockaddr*)&bind_addr, sizeof(bind_addr)) < 0) crash("bind failed");
+
+  if (listen(sockfd, 10) < 0) crash("listen failed");
+
+  std::cout << "Listening on port " << DEFAULT_PORT << " for redirected TCP traffic" << std::endl;
+
+  while (true) {
+    struct sockaddr_in client_addr;
+    socklen_t client_addr_len = sizeof(client_addr);
+    int client_sock = accept(sockfd, (struct sockaddr*)&client_addr, &client_addr_len);
+    if (client_sock < 0) {
+      perror("accept");
+      continue;
+    }
+
+    char client_ip[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
+    std::cout << "Client IP: " << client_ip << std::endl;
+    std::cout << "Client Port: " << ntohs(client_addr.sin_port) << std::endl;
+
+    handle_client(client_sock);
+  }
+
+  close(sockfd);
+  return 0;
+}

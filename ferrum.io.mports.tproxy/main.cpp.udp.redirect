@@ -1,0 +1,114 @@
+#include <iostream>
+#include <cstring>
+#include <netinet/in.h>
+#include <linux/netfilter_ipv4.h>
+#include <arpa/inet.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#define DEFAULT_PORT 9000
+#define BUFFER_SIZE 1024
+
+void handle_message(int sockfd) {
+  struct sockaddr_in client_addr;
+  struct msghdr msg;
+  struct iovec iov;
+  char buffer[BUFFER_SIZE];
+  char control[CMSG_SPACE(sizeof(struct in_pktinfo))];
+  struct cmsghdr *cmsg;
+  struct in_pktinfo *pktinfo;
+
+  iov.iov_base = buffer;
+  iov.iov_len = sizeof(buffer);
+
+  msg.msg_name = &client_addr;
+  msg.msg_namelen = sizeof(client_addr);
+  msg.msg_iov = &iov;
+  msg.msg_iovlen = 1;
+  msg.msg_control = control;
+  msg.msg_controllen = sizeof(control);
+  msg.msg_flags = 0;
+
+  ssize_t nread = recvmsg(sockfd, &msg, 0);
+  if (nread == -1) {
+    perror("recvmsg");
+    return;
+  }
+
+  for (cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+    if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_PKTINFO) {
+      pktinfo = (struct in_pktinfo *)CMSG_DATA(cmsg);
+      char dest_ip[INET_ADDRSTRLEN];
+      inet_ntop(AF_INET, &pktinfo->ipi_spec_dst, dest_ip, INET_ADDRSTRLEN);
+      std::cout << "Destination IP: " << dest_ip << std::endl;
+      std::cout << "Destination Port: " << ntohs(pktinfo->ipi_spec_dst.s_addr) << std::endl;
+
+      inet_ntop(AF_INET, &client_addr.sin_addr.s_addr, dest_ip, INET_ADDRSTRLEN);
+      std::cout << "Destination IP: " << dest_ip << std::endl;
+
+      std::cout << "Destination Port: " << ntohs(client_addr.sin_port) << std::endl;
+      // break;
+    }
+  }
+
+  // Process the received data
+  std::cout << "Received data: " << std::string(buffer, nread) << std::endl;
+}
+
+int main() {
+  int sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (sockfd == -1) {
+    perror("socket");
+    return 1;
+  }
+
+  int val = 1;
+  if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val)) == -1) {
+    perror("setsockopt SO_REUSEADDR");
+    close(sockfd);
+    return 1;
+  }
+
+  if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val)) == -1) {
+    perror("setsockopt SO_REUSEPORT");
+    close(sockfd);
+    return 1;
+  }
+
+  /*   if (setsockopt(sockfd, IPPROTO_IP, IP_PKTINFO, &val, sizeof(val)) == -1) {
+      perror("setsockopt IP_PKTINFO");
+      close(sockfd);
+      return 1;
+    }
+   */
+  if (setsockopt(sockfd, SOL_IP, IP_RECVORIGDSTADDR, &val, sizeof(val)) == -1) {
+    perror("setsockopt IP_RECVORIGDSTADDR");
+    close(sockfd);
+    return 1;
+  }
+
+  struct sockaddr_in addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+
+  if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) <= 0) {
+    perror("inet_pton");
+    close(sockfd);
+    return 1;
+  }
+  addr.sin_port = htons(DEFAULT_PORT);
+
+  if (bind(sockfd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
+    perror("bind");
+    close(sockfd);
+    return 1;
+  }
+
+  while (true) {
+    handle_message(sockfd);
+  }
+
+  close(sockfd);
+  return 0;
+}
